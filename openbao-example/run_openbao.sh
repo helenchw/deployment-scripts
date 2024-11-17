@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# whether to restart from a clean OpenBao instance
 START_OVER=1
 
 # predefined parameters / commands
@@ -11,7 +12,8 @@ TOKEN_FILE_NAME=./openbao-keys-and-tokens.txt
 RUN_IN_OPENBAO="docker exec ${CONTAINER_NAME} bao"
 ENDPOINT=https://127.0.0.1:8200
 TEST_USERNAME=user1
-TEST_PASSWORD=password
+TEST_PASSWORD=password1
+DEFAULT_TTL=730d
 
 # configurations
 CA_CERT_PATH=ssl/ca.pem
@@ -114,6 +116,7 @@ enable_services() {
   echo "> Enabling the OpenBao services (authentication using username-password) ..."
   # enable the secret storage service
   docker exec -e VAULT_TOKEN=${root_token} ${CONTAINER_NAME} bao auth enable userpass
+  docker exec -e VAULT_TOKEN=${root_token} ${CONTAINER_NAME} bao secrets enable -default-lease-ttl=${DEFAULT_TTL} kv
 }
 
 send_openbao_request() {
@@ -144,7 +147,7 @@ create_user() {
 
   # add a test user
   echo "> Creating a test user (${TEST_USERNAME}/${TEST_PASSWORD}) ..."
-  local configs="{ \"password\": \"${TEST_PASSWORD}\", \"token_polices\": [\"default\"], \"token_type\": \"service\", \"token_period\": 0, \"token_ttl\": \"720d\" }"
+  local configs="{ \"password\": \"${TEST_PASSWORD}\", \"token_polices\": [\"default\"], \"token_type\": \"service\", \"token_period\": 0, \"token_ttl\": \"${DEFAULT_TTL}\" }"
   send_openbao_request "${root_token}" "v1/auth/userpass/users/${TEST_USERNAME}" "POST" "${configs}"
 }
 
@@ -172,9 +175,30 @@ create_a_user_token() {
   echo "Token expiration time: ${token_expiration}"
 }
 
+add_kv_secret() {
+  get_root_token 
+
+  # add a key-value secret
+  echo "> Adding a key-value secret to OpenBao ..."
+  local secret="{ \"secret_key\" : \"${TEST_PASSWORD}\" }"
+  local response=$(send_openbao_request "${root_token}" "v1/kv/data/${TEST_USERNAME}" "POST" "${secret}")
+  local key=$(echo ${response} | jq -r ".secret_key")
+  echo "Set key for ID [${TEST_USERNAME}]: $key"
+}
+
+read_kv_secret() {
+  get_root_token 
+
+  # add a key-value secret
+  echo "> Reading the key-value secret in OpenBao ..."
+  local response=$(send_openbao_request "${root_token}" "v1/kv/data/${TEST_USERNAME}" "GET")
+  local key=$(echo ${response} | jq -r ".data.secret_key")
+  echo "Key retrieved for ID [${TEST_USERNAME}]: $key"
+}
 
 # main
 
+# setup
 check_for_ssl
 reset
 run_openbao
@@ -182,7 +206,13 @@ init_vault
 unseal_vault
 echo_root_token
 enable_services
+add_policies
 
+# key-value secrets
+add_kv_secret
+read_kv_secret
+
+# user-based tokens
 create_user
 list_users
 create_a_user_token
